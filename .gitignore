@@ -1,0 +1,9 @@
+.movie-venv/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+data/
+models/
+.ipynb_checkpoints/
