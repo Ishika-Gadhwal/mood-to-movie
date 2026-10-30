@@ -1,113 +1,71 @@
+"""MovieLens recommendation and command-line interface."""
+
+from pathlib import Path
 
 import pandas as pd
 
-from genre_router import route_to_genres
+from genre_predictor import GenrePredictor
 
-MOVIES_FILE = "movies.csv"
-
-
-def load_movies():
-    return pd.read_csv(MOVIES_FILE)
+BASE_DIR = Path(__file__).resolve().parent
+MOVIES_FILE = BASE_DIR / "movies.csv"
 
 
-def recommend_movies(user_text: str, top_n: int = 10) -> dict:
-    selected_genres = route_to_genres(user_text)
+def load_movies() -> pd.DataFrame:
+    if not MOVIES_FILE.exists():
+        raise FileNotFoundError(f"Movie catalogue was not found: {MOVIES_FILE}")
+    required = {"title", "genres", "average_rating", "rating_count"}
+    movies = pd.read_csv(MOVIES_FILE)
+    missing = required - set(movies.columns)
+    if missing:
+        raise ValueError(f"Movie catalogue is missing columns: {', '.join(sorted(missing))}")
+    return movies
 
-    if not selected_genres:
-        return {
-            "emotion": None,
-            "genres": [],
-            "movies": [],
-            "message": "Please describe your mood or movie preference.",
-        }
 
-    wanted_genres = [genre.value for genre in selected_genres]
-    movies_df = load_movies()
-
-    # Convert each movie's genres into a set for matching.
-    movies_df["genre_set"] = movies_df["genres"].fillna("").apply(
-        lambda value: set(value.split(", "))
-    )
-    wanted_set = set(wanted_genres)
-
-    # Prefer movies containing every selected genre.
-    matching = movies_df[
-        movies_df["genre_set"].apply(lambda genres: wanted_set.issubset(genres))
-    ].copy()
-
-    # If too few matches exist, include movies matching any selected genre.
+def recommend_movies(user_text: str, top_n: int = 10, predictor: GenrePredictor | None = None) -> dict:
+    """Predict two genres, then filter and rank real MovieLens ratings."""
+    if not isinstance(user_text, str) or not user_text.strip():
+        return {"genres": [], "movies": [], "message": "Please describe your mood or movie preference."}
+    if top_n < 1:
+        raise ValueError("top_n must be at least 1.")
+    selected_genres = (predictor or GenrePredictor()).predict(user_text, k=2)
+    wanted = {genre.value for genre in selected_genres}
+    movies = load_movies().copy()
+    movies["genre_set"] = movies["genres"].fillna("").map(lambda value: {part.strip() for part in value.split(",") if part.strip()})
+    matching = movies[movies["genre_set"].map(wanted.issubset)].copy()
+    match_type = "both genres"
     if len(matching) < top_n:
-        matching = movies_df[
-            movies_df["genre_set"].apply(lambda genres: bool(genres & wanted_set))
-        ].copy()
-
+        matching = movies[movies["genre_set"].map(lambda genres: bool(genres & wanted))].copy()
+        match_type = "either genre"
     if matching.empty:
-        return {
-            "emotion": None,
-            "genres": wanted_genres,
-            "movies": [],
-            "message": "No matching movies found.",
-        }
+        return {"genres": [genre.value for genre in selected_genres], "movies": [], "message": "No matching movies found."}
 
-    # Rank using actual ratings, with a small adjustment for rating reliability.
-    global_mean = movies_df["average_rating"].mean()
-    minimum_votes = 20
-
-    matching["ranking_score"] = (
-        matching["rating_count"] / (matching["rating_count"] + minimum_votes)
-        * matching["average_rating"]
-        + minimum_votes / (matching["rating_count"] + minimum_votes)
-        * global_mean
-    )
-
-    # Prefer movies with at least 10 ratings when enough candidates exist.
+    global_mean, minimum_votes = movies["average_rating"].mean(), 20
+    matching["ranking_score"] = (matching["rating_count"] / (matching["rating_count"] + minimum_votes) * matching["average_rating"] + minimum_votes / (matching["rating_count"] + minimum_votes) * global_mean)
     reliable = matching[matching["rating_count"] >= 10]
-
     if len(reliable) >= top_n:
         matching = reliable
-
-    # Avoid recommending the same movie title more than once.
-    matching = matching.sort_values(
-        "ranking_score", ascending=False
-    ).drop_duplicates(subset=["title"])
-
-    matching = matching.head(top_n)
-
-    return {
-        "emotion": None,  # Emotion is printed by the existing genre router.
-        "genres": wanted_genres,
-        "movies": matching[
-            ["title", "genres", "average_rating", "rating_count", "ranking_score"]
-        ].to_dict(orient="records"),
-        "message": None,
-    }
+    selected = matching.sort_values("ranking_score", ascending=False).drop_duplicates("title").head(top_n)
+    return {"genres": [genre.value for genre in selected_genres], "movies": selected[["title", "genres", "average_rating", "rating_count", "ranking_score"]].to_dict(orient="records"), "message": None, "match_type": match_type}
 
 
-if __name__ == "__main__":
-    print("Mood-to-Movie is ready!")
-
+def main() -> None:
+    print("Mood-to-Movie is ready. Type 'exit' to stop.")
     while True:
-        user_text = input(
-            "\nHow are you feeling, or what kind of movie do you want? "
-            "(type 'exit' to stop): "
-        )
-
-        if user_text.strip().lower() == "exit":
-            break
-
-        result = recommend_movies(user_text)
-
+        text = input("\nDescribe your mood or the movie you want: ")
+        if text.strip().lower() == "exit":
+            return
+        try:
+            result = recommend_movies(text)
+        except (FileNotFoundError, ValueError, RuntimeError) as error:
+            print(f"Unable to recommend movies: {error}")
+            continue
         if result["message"]:
             print(result["message"])
             continue
-
-        print("\nSelected genres:", ", ".join(result["genres"]))
-        print("\nMovie recommendations:\n")
-
+        print("Predicted genres:", ", ".join(result["genres"]))
         for movie in result["movies"]:
-            print(
-                f"{movie['title']} | "
-                f"Genres: {movie['genres']} | "
-                f"Rating: {movie['average_rating']:.2f}/5 | "
-                f"Ratings: {movie['rating_count']}"
-            )
+            print(f"{movie['title']} | {movie['genres']} | {movie['average_rating']:.2f}/5 ({movie['rating_count']} ratings)")
+
+
+if __name__ == "__main__":
+    main()

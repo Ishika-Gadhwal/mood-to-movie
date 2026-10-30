@@ -1,0 +1,3 @@
+# Needed only when regenerating movies.csv with prepare_movies.py.
+tensorflow>=2.21
+tensorflow-datasets>=4.9

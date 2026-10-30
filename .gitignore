@@ -5,5 +5,10 @@ __pycache__/
 *.py[cod]
 .env
 data/
-models/
 .ipynb_checkpoints/
+.pytest_cache/
+.coverage
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
